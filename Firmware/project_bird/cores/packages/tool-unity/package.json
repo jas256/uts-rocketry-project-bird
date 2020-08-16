@@ -1,0 +1,7 @@
+{
+    "description": "Unity",
+    "name": "tool-unity",
+    "system": "*",
+    "url": "https://github.com/ThrowTheSwitch/Unity",
+    "version": "1.20500.200612"
+}
