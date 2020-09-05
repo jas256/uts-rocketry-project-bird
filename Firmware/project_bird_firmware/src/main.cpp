@@ -15,6 +15,9 @@
 
 #define CIRCULAR_BUFFER_INT_SAFE
 
+#define CONTINUITY_VOLTAGE 5.0
+#define DETONATE_PULSE_TIME 1000
+
 MS5xxx barometer(&Wire);
 LIS331 accelerometer; //Adafruit_LIS331HH accelerometer = Adafruit_LIS331HH();
 
@@ -42,6 +45,11 @@ LED_Pin_Control_Arduino detonate_ch1(CHARGE_DETONATE_CH1);
 LED_Pin_Control_Arduino detonate_ch2(CHARGE_DETONATE_CH2);
 LED_Pin_Control_Arduino detonate_ch3(CHARGE_DETONATE_CH3);
 LED_Pin_Control_Arduino detonate_ch4(CHARGE_DETONATE_CH4);
+
+float continuity_voltages[4];
+bool main_det = false;
+bool same_det = false;
+bool drogue_det = false;
 
 Button button = Button();
 Bounce cut_wire = Bounce();
@@ -73,15 +81,15 @@ struct SystemConfig
 {
     //Data Options (Fixed)
     byte recording_rate_divider = 2;
-    byte written = 101;
+    byte written = 102;
 
     // User Deployment Charge Settings (delays in ms)
     bool main_parachute_absolute_altitude_deploy = false;
     float main_parachute_deploy_altitude = 100;
-    float main_parachute_deploy_altitude_difference = 20;
     unsigned long drouge_delay = 0;
     unsigned long main_delay = 0;
     unsigned long redundant_delay = 1000;
+    unsigned long dual_delay = 3000;
 
     // Armed to Flight Trigger
     enum TriggerOption
@@ -91,7 +99,7 @@ struct SystemConfig
         ACCELERATION_ONLY,
         ALTITUDE_ONLY,
     };
-    TriggerOption trigger_option = ALTITUDE_OR_ACCELERATION;
+    TriggerOption trigger_option = ALTITUDE_ONLY;
     float trigger_altitude = 2;
     float trigger_acceleration = 9.81 * 3;
 
@@ -132,6 +140,14 @@ byte readSensorData(FlightInfoFrame *dataframe)
     return 0x01;
 }
 
+void readDeploymentChargeVoltage()
+{
+    continuity_voltages[0] = float(analogRead(CHARGE_CONTINUITY_CH1)) * float(CHARGE_DIVIDER_RATIO_MULTIPLIER);
+    continuity_voltages[1] = float(analogRead(CHARGE_CONTINUITY_CH2)) * float(CHARGE_DIVIDER_RATIO_MULTIPLIER);
+    continuity_voltages[2] = float(analogRead(CHARGE_CONTINUITY_CH3)) * float(CHARGE_DIVIDER_RATIO_MULTIPLIER);
+    continuity_voltages[3] = float(analogRead(CHARGE_CONTINUITY_CH4)) * float(CHARGE_DIVIDER_RATIO_MULTIPLIER);
+}
+
 byte sensorSetup()
 {
     Wire.begin();
@@ -158,9 +174,6 @@ byte sensorSetup()
     status_led.update();
     armed_led.update();
 
-    FlightInfoFrame test_frame;
-    //if (readSensorData(&test_frame) > 0)
-    //    return 0x03;
     for (int ix = 0; ix < 4; ix++)
     {
         barometer_pressure_avg.addValue(0);
@@ -412,16 +425,7 @@ void inputUpdate()
 {
     button.update();
     cut_wire.update();
-}
-
-bool vbusActive()
-{
-    // from http://msalino-hugg.blogspot.com/2014/02/arduino-micro-leonardo-detecting-if-you.html
-    if (USBSTA & (1 << VBUS))
-    { //checks state of VBUS
-        return true;
-    }
-    return false;
+    readDeploymentChargeVoltage();
 }
 
 // EEPROM Configuration Functions
@@ -449,19 +453,199 @@ void readConfigFromStore(SystemConfig *config)
 void printMainMenu()
 {
     Serial.println(F("UTS Rocketry - Project Bird, Micro Flight Controller V1.0"));
-    Serial.println(F("Please select an option (Enter Number Followed By Enter using CL & LF):"));
+    Serial.println(F("Please select an option:"));
     Serial.println();
     // Menu Options
-    Serial.println(F("1. Print Data from Last Flight (csv Format)"));
-    Serial.println(F("2. Print Data from Any Flight (csv Format)"));
-    Serial.println(F("3. Read Sensor Values"));
-    Serial.println(F("4. Read Configuration Settings"));
-    Serial.println(F("5. Set Deployment Charge Options"));
+    Serial.println(F("1 - 4. Print Data from Flight x (csv Format)"));
+    Serial.println(F("5. Print Data from Last Flight (csv Format)"));
     Serial.println(F("6. Exit From PC Transfer Mode"));
-    Serial.println(F("10. DANGER - Trigger and Test Deployment Charges"));
+}
+
+void printFlightData(int flight_no)
+{
+    RecorderMetadata recorder_metadata = recorder.getMetadata();
+    uint8_t flight_number = flight_no;
+
+    if (flight_number == 99)
+    {
+        Serial.println("No Flights Recorded.");
+        return;
+    }
+
+    Serial.println();
+    for (int i = 0; i < 100; i++)
+    {
+        Serial.print('-');
+    }
+    Serial.println();
+
+    Serial.println();
+    Serial.print(F("Flight "));
+    Serial.println(flight_number + 1);
+
+    Serial.print(F("Maximum Altitude = "));
+    Serial.print(recorder_metadata.max_altitudes[flight_number]);
+    Serial.println("m");
+
+    Serial.print(F("Flight Time = "));
+    Serial.print(float(recorder_metadata.flight_times[flight_number]) / 1000.0);
+    Serial.println(F("sec"));
+    Serial.println();
+
+    Serial.println(F("Time,Alt(m),Flight Event,Dep Event,Ground P(Pa),Ground T(C),Pressure (Pa),Temperature (C),Ax (m/s^2),Ay (m/s^2),Az (m/s^2)"));
+
+    for (unsigned long record_iter = 0; record_iter < recorder_metadata.flight_rows_used[flight_number]; record_iter++)
+    {
+        FlightInfoFrame record_frame;
+        recorder.loadDataframe(flight_number, record_iter, &record_frame);
+        Serial.print(record_frame.timestamp);
+        Serial.print(",");
+        Serial.print(recorder.calculateAltitude(record_frame.absolute_pressure, record_frame.ground_pressure, record_frame.ground_temperature));
+        Serial.print(",");
+        switch (static_cast<EventCode>(record_frame.flight_event))
+        {
+        case EventCode::NO_EVENT:
+
+            break;
+        case EventCode::LAUNCHED_OFF_RAIL:
+            Serial.print(F("Launched"));
+            break;
+        case EventCode::APOGEE:
+            Serial.print(F("Apogee"));
+            break;
+        case EventCode::LANDED:
+            Serial.print(F("Landed"));
+            break;
+        default:
+            break;
+        }
+        Serial.print(",");
+        switch (static_cast<DepolymentEvent>(record_frame.deployment_event))
+        {
+        case DepolymentEvent::DEPLOY_NO_EVENT:
+
+            break;
+        case DepolymentEvent::DEPLOY_MAIN_DEPLOYED:
+            Serial.print(F("Main"));
+            break;
+        case DepolymentEvent::DEPLOY_MAIN2_DEPLOYED:
+            Serial.print(F("Main 2"));
+            break;
+        case DepolymentEvent::DEPLOY_DROUGUE_DEPLOYED:
+            Serial.print(F("Drougue"));
+            break;
+        case DepolymentEvent::DEPLOY_DROUGUE2_DEPLOYED:
+            Serial.print(F("Drougue 2"));
+            break;
+        default:
+            break;
+        }
+        Serial.print(",");
+        Serial.print(record_frame.ground_pressure);
+        Serial.print(",");
+        Serial.print(record_frame.ground_temperature);
+        Serial.print(",");
+        Serial.print(record_frame.absolute_pressure);
+        Serial.print(",");
+        Serial.print(record_frame.temperature);
+        Serial.print(",");
+        Serial.print(record_frame.acceleration_data[0]);
+        Serial.print(",");
+        Serial.print(record_frame.acceleration_data[1]);
+        Serial.print(",");
+        Serial.print(record_frame.acceleration_data[2]);
+        Serial.println();
+    }
+
+    Serial.println();
+    Serial.println(F("End of Flight Report"));
+    Serial.println();
+    for (int i = 0; i < 100; i++)
+    {
+        Serial.print('-');
+    }
+    Serial.println();
 }
 
 // State Programs
+
+DepolymentEvent detonateMachine()
+{
+    DepolymentEvent event_return = DepolymentEvent::DEPLOY_NO_EVENT;
+
+    static bool previous_main_detonate;
+    static bool previous_drogue_detonate;
+    static bool previous_same_detonate;
+
+    static bool detonateLockout[4];
+
+    static unsigned long detonate_main_start;
+    static unsigned long detonate_drogue_start;
+
+    static unsigned long same_delay;
+
+    if (previous_same_detonate != same_det && same_det)
+    {
+        same_det = current_config.dual_delay;
+    }
+    else if (same_det)
+    {
+    }
+    else
+    {
+        same_delay = 0;
+    }
+
+    if (drogue_det)
+    {
+        if (previous_drogue_detonate != drogue_det && drogue_det)
+        {
+            detonate_drogue_start = millis();
+        }
+        if (millis() - detonate_drogue_start >= current_config.drouge_delay && (continuity_voltages[0] >= CONTINUITY_VOLTAGE) && !detonateLockout[0]) // Primary Drogue
+        {
+            event_return = DepolymentEvent::DEPLOY_DROUGUE_DEPLOYED;
+            detonate_ch1.pulse(DETONATE_PULSE_TIME);
+            detonateLockout[0] = true;
+        }
+        if (millis() - detonate_drogue_start >= current_config.drouge_delay + current_config.redundant_delay && (continuity_voltages[3] >= CONTINUITY_VOLTAGE) && !detonateLockout[1]) // Secondary Drogue
+        {
+            event_return = DepolymentEvent::DEPLOY_DROUGUE2_DEPLOYED;
+            detonate_ch4.pulse(DETONATE_PULSE_TIME);
+            detonateLockout[1] = true;
+        }
+    }
+
+    if (main_det)
+    {
+        if (previous_main_detonate != main_det && main_det)
+        {
+            detonate_main_start = millis();
+        }
+        if (millis() - detonate_main_start >= current_config.main_delay + same_delay && (continuity_voltages[1] >= CONTINUITY_VOLTAGE) && !detonateLockout[2]) // Primary Main
+        {
+            event_return = DepolymentEvent::DEPLOY_MAIN_DEPLOYED;
+            detonate_ch2.pulse(DETONATE_PULSE_TIME);
+            detonateLockout[2] = true;
+        }
+        if (millis() - detonate_main_start >= current_config.main_delay + same_delay + current_config.redundant_delay && (continuity_voltages[2] >= CONTINUITY_VOLTAGE) && !detonateLockout[3]) // Secondary Main
+        {
+            event_return = DepolymentEvent::DEPLOY_MAIN2_DEPLOYED;
+            detonate_ch3.pulse(DETONATE_PULSE_TIME);
+            detonateLockout[3] = true;
+        }
+    }
+
+    detonate_ch1.update();
+    detonate_ch2.update();
+    detonate_ch3.update();
+    detonate_ch4.update();
+    previous_drogue_detonate = drogue_det;
+    previous_main_detonate = main_det;
+    previous_same_detonate = same_det;
+
+    return event_return;
+}
 
 void disarmedState()
 {
@@ -637,15 +821,23 @@ void flightState()
             apogee_reached_time = millis();
 
             // delay main if rocket is under deployment altitude if drouge is active
-            if (false && (recorder.calculateAltitude(loop_data.absolute_pressure, loop_data.ground_pressure, loop_data.ground_temperature) <= current_config.main_parachute_deploy_altitude))
+            if ((recorder.calculateAltitude(loop_data.absolute_pressure, loop_data.ground_pressure, loop_data.ground_temperature) <= current_config.main_parachute_deploy_altitude))
             {
-                // deploy Drouge immiediately and delay main for 5 seconds
+                same_det = true;
+                drogue_det = true;
             }
             else
             {
-                // delay + deploy Drouge
+                drogue_det = true;
             }
         }
+
+        if (recorder.calculateAltitude(loop_data.absolute_pressure, loop_data.ground_pressure, loop_data.ground_temperature) <= current_config.main_parachute_deploy_altitude)
+        {
+            main_det = true;
+        }
+
+        loop_data.deployment_event = static_cast<byte>(detonateMachine());
 
         // Landed Detection
         if ((flight_state == FlightState::APOGEE_REACHED || flight_state == FlightState::DROUGE_DEPLOYED || flight_state == FlightState::MAIN_DEPLOYED) && pressure_long_term.size() >= 19)
@@ -705,112 +897,6 @@ void landedState()
     }
 }
 
-void printFlightData(int flight_no)
-{
-    RecorderMetadata recorder_metadata = recorder.getMetadata();
-    uint8_t flight_number = flight_no;
-
-    if (flight_number == 99)
-    {
-        Serial.println("No Flights Recorded.");
-        return;
-    }
-
-    Serial.println();
-    for (int i = 0; i < 100; i++)
-    {
-        Serial.print('-');
-    }
-    Serial.println();
-
-    Serial.println();
-    Serial.print(F("Flight "));
-    Serial.println(flight_number);
-
-    Serial.print(F("Maximum Altitude = "));
-    Serial.print(recorder_metadata.max_altitudes[flight_number]);
-    Serial.println("m");
-
-    Serial.print(F("Flight Time = "));
-    Serial.print(float(recorder_metadata.flight_times[flight_number]) / 1000.0);
-    Serial.println(F("sec"));
-    Serial.println();
-
-    Serial.println(F("Time,Alt(m),Flight Event,Dep Event,Ground P(Pa),Ground T(C),Pressure (Pa),Temperature (C),Ax (m/s^2),Ay (m/s^2),Az (m/s^2)"));
-
-    for (unsigned long record_iter = 0; record_iter < recorder_metadata.flight_rows_used[flight_number]; record_iter++)
-    {
-        FlightInfoFrame record_frame;
-        recorder.loadDataframe(flight_number, record_iter, &record_frame);
-        Serial.print(record_frame.timestamp);
-        Serial.print(",");
-        Serial.print(recorder.calculateAltitude(record_frame.absolute_pressure, record_frame.ground_pressure, record_frame.ground_temperature));
-        Serial.print(",");
-        switch (static_cast<EventCode>(record_frame.flight_event))
-        {
-        case EventCode::NO_EVENT:
-
-            break;
-        case EventCode::LAUNCHED_OFF_RAIL:
-            Serial.print(F("Launched"));
-            break;
-        case EventCode::APOGEE:
-            Serial.print(F("Apogee"));
-            break;
-        case EventCode::LANDED:
-            Serial.print(F("Landed"));
-            break;
-        default:
-            break;
-        }
-        Serial.print(",");
-        switch (static_cast<DepolymentEvent>(record_frame.deployment_event))
-        {
-        case DepolymentEvent::DEPLOY_NO_EVENT:
-
-            break;
-        case DepolymentEvent::DEPLOY_MAIN_DEPLOYED:
-            Serial.print(F("Main"));
-            break;
-        case DepolymentEvent::DEPLOY_MAIN2_DEPLOYED:
-            Serial.print(F("Main 2"));
-            break;
-        case DepolymentEvent::DEPLOY_DROUGUE_DEPLOYED:
-            Serial.print(F("Drougue"));
-            break;
-        case DepolymentEvent::DEPLOY_DROUGUE2_DEPLOYED:
-            Serial.print(F("Drougue 2"));
-            break;
-        default:
-            break;
-        }
-        Serial.print(",");
-        Serial.print(record_frame.ground_pressure);
-        Serial.print(",");
-        Serial.print(record_frame.ground_temperature);
-        Serial.print(",");
-        Serial.print(record_frame.absolute_pressure);
-        Serial.print(",");
-        Serial.print(record_frame.temperature);
-        Serial.print(",");
-        Serial.print(record_frame.acceleration_data[0]);
-        Serial.print(",");
-        Serial.print(record_frame.acceleration_data[1]);
-        Serial.print(",");
-        Serial.print(record_frame.acceleration_data[2]);
-        Serial.println();
-    }
-
-    Serial.println();
-    Serial.println(F("End of Flight Report"));
-    Serial.println();
-    for (int i = 0; i < 100; i++)
-    {
-        Serial.print('-');
-    }
-    Serial.println();
-}
-
 void pcTransferState()
 {
     // Serial Connect detect
@@ -838,57 +924,55 @@ void pcTransferState()
     // Input Retrive and Command Entered
     if (Serial.available() > 0)
     {
-        int option = Serial.parseInt();
-        while (Serial.available() > 0)
-        {
-            Serial.read();
-        }
-
-        if (option == 255) // Device Control 1 & 2
+        byte ident = Serial.peek();
+        if (ident == 0x11) // Device Control 1
         {
             // Binary Control
+
+            while (Serial.available() > 0)
+            {
+                Serial.read();
+            }
         }
         else
         {
-            // Interactive Terminal Control
-            int selected_option = option;
-
-            switch (selected_option)
+            // interactive control
+            long option = Serial.parseInt();
+            while (Serial.available() > 0)
             {
-            case 1: // 1. Print Data from Last Flight (csv Format)
-                RecorderMetadata recorder_metadata = recorder.getMetadata();
-                uint8_t flight_number = recorder_metadata.last_successful_flight;
-                printFlightData(flight_number);
-                reprint_main_menu = true;
+                Serial.read();
+            }
+            RecorderMetadata recorder_metadata = recorder.getMetadata();
+            switch (option)
+            {
+            case 1: 
+                printFlightData(0);
                 break;
-            case 2: // 2. Print Data from Any Flight (csv Format)
-                
+            case 2: 
+                printFlightData(1);
                 break;
-            case 3: // 3. Read Sensor Values
-                /* code */
+            case 3: 
+                printFlightData(2);
                 break;
-            case 4: // 4. Read Configuration Settings
-                /* code */
+            case 4: 
+                printFlightData(3);
                 break;
-            case 5: // 5. Set Deployment Charge Options
-                /* code */
+            case 5:
+                printFlightData(recorder_metadata.last_successful_flight);
                 break;
             case 6: // 6. Exit From PC Transfer Mode
-                /* code */
+                current_state = SystemState::DISARMED;
                 break;
-            case 10: // 10. DANGER - Trigger and Test Deployment Charges
-                /* code */
-                break;
-
             default:
                 Serial.println(F("Invalid Input, Please Enter A Correct Value."));
                 break;
             }
+            reprint_main_menu = true;
         }
     }
 
     // USB Disconnect
-    if (!vbusActive())
+    if (!serial_connected)
     {
         current_state = SystemState::DISARMED;
     }
@@ -911,7 +995,6 @@ void setup()
 
     readConfigFromStore(&current_config);
 
-    USBCON |= (1 << OTGPADE); // Enable detection of VBUS to determine power source
     // Setup and Self Test
 
     bool recorder_setup_success = recorder.begin();
