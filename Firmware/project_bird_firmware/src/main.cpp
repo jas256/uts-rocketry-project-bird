@@ -4,7 +4,7 @@
 #include <board_definition.h>
 #include <EEPROM.h>
 
-#include "RunningAverage.h"
+//#include "RunningAverage.h"
 #include <MS5xxx.h>
 #include "SparkFun_LIS331.h"
 #include <Bounce2.h>
@@ -24,8 +24,8 @@ LIS331 accelerometer; //Adafruit_LIS331HH accelerometer = Adafruit_LIS331HH();
 MemoryMap4M memory_map;
 FlightRecorder recorder(MB(4), FLASH_CHIP_SS, memory_map);
 
-RunningAverage barometer_temperature_avg(4);
-RunningAverage barometer_pressure_avg(4); // must use average due to possible ejection charges
+//RunningAverage barometer_temperature_avg(3);
+//RunningAverage barometer_pressure_avg(3); // must use average due to possible ejection charges
 float barometer_temperature;
 float barometer_pressure;
 
@@ -113,10 +113,10 @@ struct SystemConfig
 byte updateBarometerData()
 {
     barometer.Readout();
-    barometer_pressure_avg.addValue(barometer.GetPres());
-    barometer_temperature_avg.addValue(barometer.GetTemp() * 0.01); // Lib provide temp in 0.01 multiples
-    barometer_pressure = barometer_pressure_avg.getAverage();
-    barometer_temperature = barometer_temperature_avg.getAverage();
+    //barometer_pressure_avg.addValue(barometer.GetPres());
+    //barometer_temperature_avg.addValue(barometer.GetTemp() * 0.01); // Lib provide temp in 0.01 multiples
+    barometer_pressure = barometer.GetPres();           //barometer_pressure_avg.getAverage();
+    barometer_temperature = barometer.GetTemp() * 0.01; //barometer_temperature_avg.getAverage();
 
     return 0x00;
 }
@@ -174,11 +174,11 @@ byte sensorSetup()
     status_led.update();
     armed_led.update();
 
-    for (int ix = 0; ix < 4; ix++)
-    {
-        barometer_pressure_avg.addValue(0);
-        barometer_temperature_avg.addValue(0);
-    }
+    // for (int ix = 0; ix < 4; ix++)
+    // {
+    //     barometer_pressure_avg.addValue(0);
+    //     barometer_temperature_avg.addValue(0);
+    // }
     return 0x00;
 }
 
@@ -261,17 +261,6 @@ void ledUpdate()
         static bool blink_pause;
         if (millis() - blink_timer >= 500 && blink_pause == false)
         {
-            // if (blink_counts > recorder.getMetadata().current_flight_record)
-            // {
-            //     status_led.pulse(100);
-            //     blink_counts = 0;
-            //     blink_pause = true;
-            // }
-            // else
-            // {
-            //     status_led.pulse(100);
-            //     blink_counts++;
-            // }
             if (blink_counts > recorder.getMetadata().current_flight_record)
             {
                 blink_counts = 0;
@@ -342,6 +331,11 @@ void ledUpdate()
 
     status_led.update();
     armed_led.update();
+
+    detonate_ch1.update();
+    detonate_ch2.update();
+    detonate_ch3.update();
+    detonate_ch4.update();
 }
 
 void buzzerUpdate()
@@ -452,13 +446,12 @@ void readConfigFromStore(SystemConfig *config)
 
 void printMainMenu()
 {
-    Serial.println(F("UTS Rocketry - Project Bird, Micro Flight Controller V1.0"));
+    Serial.println(F("UTS Rocketry - Project Bird V1.0"));
     Serial.println(F("Please select an option:"));
     Serial.println();
     // Menu Options
     Serial.println(F("1 - 4. Print Data from Flight x (csv Format)"));
     Serial.println(F("5. Print Data from Last Flight (csv Format)"));
-    Serial.println(F("6. Exit From PC Transfer Mode"));
 }
 
 void printFlightData(int flight_no)
@@ -468,7 +461,7 @@ void printFlightData(int flight_no)
 
     if (flight_number == 99)
     {
-        Serial.println("No Flights Recorded.");
+        Serial.println("No Flight Recorded.");
         return;
     }
 
@@ -483,16 +476,16 @@ void printFlightData(int flight_no)
     Serial.print(F("Flight "));
     Serial.println(flight_number + 1);
 
-    Serial.print(F("Maximum Altitude = "));
+    Serial.print(F("Max Alt = "));
     Serial.print(recorder_metadata.max_altitudes[flight_number]);
     Serial.println("m");
 
-    Serial.print(F("Flight Time = "));
+    Serial.print(F("Flt Time = "));
     Serial.print(float(recorder_metadata.flight_times[flight_number]) / 1000.0);
     Serial.println(F("sec"));
     Serial.println();
 
-    Serial.println(F("Time,Alt(m),Flight Event,Dep Event,Ground P(Pa),Ground T(C),Pressure (Pa),Temperature (C),Ax (m/s^2),Ay (m/s^2),Az (m/s^2)"));
+    Serial.println(F("Time,Alt(m),Flt Event,Dep Event,G P(Pa),G T(C),P (Pa),T (C),Ax (m/s^2),Ay (m/s^2),Az (m/s^2)"));
 
     for (unsigned long record_iter = 0; record_iter < recorder_metadata.flight_rows_used[flight_number]; record_iter++)
     {
@@ -582,26 +575,17 @@ DepolymentEvent detonateMachine()
     static unsigned long detonate_main_start;
     static unsigned long detonate_drogue_start;
 
-    static unsigned long same_delay;
+    unsigned long same_delay;
 
-    if (previous_same_detonate != same_det && same_det)
+    if (!drogue_det)
     {
-        same_det = current_config.dual_delay;
+        detonate_drogue_start = millis();
     }
-    else if (same_det)
-    {
-    }
-    else
-    {
-        same_delay = 0;
-    }
+
+    
 
     if (drogue_det)
     {
-        if (previous_drogue_detonate != drogue_det && drogue_det)
-        {
-            detonate_drogue_start = millis();
-        }
         if (millis() - detonate_drogue_start >= current_config.drouge_delay && (continuity_voltages[0] >= CONTINUITY_VOLTAGE) && !detonateLockout[0]) // Primary Drogue
         {
             event_return = DepolymentEvent::DEPLOY_DROUGUE_DEPLOYED;
@@ -616,19 +600,20 @@ DepolymentEvent detonateMachine()
         }
     }
 
-    if (main_det)
+    if (!main_det || (millis() - detonate_drogue_start <= (current_config.drouge_delay + current_config.redundant_delay + current_config.dual_delay)))
     {
-        if (previous_main_detonate != main_det && main_det)
-        {
-            detonate_main_start = millis();
-        }
-        if (millis() - detonate_main_start >= current_config.main_delay + same_delay && (continuity_voltages[1] >= CONTINUITY_VOLTAGE) && !detonateLockout[2]) // Primary Main
+        detonate_main_start = millis();
+    }
+
+    if (main_det && (millis() - detonate_drogue_start > (current_config.drouge_delay + current_config.redundant_delay + current_config.dual_delay)))
+    {
+        if (millis() - detonate_main_start >= current_config.main_delay && (continuity_voltages[1] >= CONTINUITY_VOLTAGE) && !detonateLockout[2]) // Primary Main
         {
             event_return = DepolymentEvent::DEPLOY_MAIN_DEPLOYED;
             detonate_ch2.pulse(DETONATE_PULSE_TIME);
             detonateLockout[2] = true;
         }
-        if (millis() - detonate_main_start >= current_config.main_delay + same_delay + current_config.redundant_delay && (continuity_voltages[2] >= CONTINUITY_VOLTAGE) && !detonateLockout[3]) // Secondary Main
+        if (millis() - detonate_main_start >= current_config.main_delay + current_config.redundant_delay && (continuity_voltages[2] >= CONTINUITY_VOLTAGE) && !detonateLockout[3]) // Secondary Main
         {
             event_return = DepolymentEvent::DEPLOY_MAIN2_DEPLOYED;
             detonate_ch3.pulse(DETONATE_PULSE_TIME);
@@ -825,6 +810,7 @@ void flightState()
             {
                 same_det = true;
                 drogue_det = true;
+                main_det = true;
             }
             else
             {
@@ -832,7 +818,7 @@ void flightState()
             }
         }
 
-        if (recorder.calculateAltitude(loop_data.absolute_pressure, loop_data.ground_pressure, loop_data.ground_temperature) <= current_config.main_parachute_deploy_altitude)
+        if (drogue_det && recorder.calculateAltitude(loop_data.absolute_pressure, loop_data.ground_pressure, loop_data.ground_temperature) <= current_config.main_parachute_deploy_altitude)
         {
             main_det = true;
         }
@@ -945,26 +931,23 @@ void pcTransferState()
             RecorderMetadata recorder_metadata = recorder.getMetadata();
             switch (option)
             {
-            case 1: 
+            case 1:
                 printFlightData(0);
                 break;
-            case 2: 
+            case 2:
                 printFlightData(1);
                 break;
-            case 3: 
+            case 3:
                 printFlightData(2);
                 break;
-            case 4: 
+            case 4:
                 printFlightData(3);
                 break;
             case 5:
                 printFlightData(recorder_metadata.last_successful_flight);
                 break;
-            case 6: // 6. Exit From PC Transfer Mode
-                current_state = SystemState::DISARMED;
-                break;
             default:
-                Serial.println(F("Invalid Input, Please Enter A Correct Value."));
+                Serial.println(F("Invalid Input."));
                 break;
             }
             reprint_main_menu = true;
