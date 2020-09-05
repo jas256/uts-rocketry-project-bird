@@ -713,7 +713,7 @@ void printFlightData(int flight_no)
     if (flight_number == 99)
     {
         Serial.println("No Flights Recorded.");
-        break;
+        return;
     }
 
     Serial.println();
@@ -856,15 +856,13 @@ void pcTransferState()
             switch (selected_option)
             {
             case 1: // 1. Print Data from Last Flight (csv Format)
-
                 RecorderMetadata recorder_metadata = recorder.getMetadata();
                 uint8_t flight_number = recorder_metadata.last_successful_flight;
                 printFlightData(flight_number);
                 reprint_main_menu = true;
-
                 break;
             case 2: // 2. Print Data from Any Flight (csv Format)
-                /* code */
+                
                 break;
             case 3: // 3. Read Sensor Values
                 /* code */
