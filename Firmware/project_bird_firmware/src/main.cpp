@@ -3,6 +3,7 @@
 #include <Wire.h>
 #include <board_definition.h>
 #include <EEPROM.h>
+#include <NewTone.h>
 
 //#include "RunningAverage.h"
 #include <MS5xxx.h>
@@ -346,66 +347,66 @@ void buzzerUpdate()
     switch (current_state)
     {
     case SystemState::PC_DATA_TRANSFER:
-        noTone(BUZZER);
+        noNewTone(BUZZER);
         break;
     case SystemState::DISARMED:
-        noTone(BUZZER);
+        noNewTone(BUZZER);
         break;
     case SystemState::INSTALL:
         if (millis() - buzzer_timer >= 5000)
         {
-            tone(BUZZER, 1000, 100);
+            NewTone(BUZZER, 1000, 100);
             buzzer_timer = millis();
         }
         break;
     case SystemState::ARMED:
         if (millis() - buzzer_timer >= 1000)
         {
-            tone(BUZZER, 1500, 250);
+            NewTone(BUZZER, 1500, 250);
             buzzer_timer = millis();
         }
         break;
     case SystemState::FLIGHT:
         if (millis() - buzzer_timer >= 2000)
         {
-            tone(BUZZER, 1500, 1000);
+            NewTone(BUZZER, 1500, 1000);
             buzzer_timer = millis();
         }
         break;
     case SystemState::LANDED:
         if (millis() - buzzer_timer >= 2000 && buzzer_mode == 0)
         {
-            tone(BUZZER, 500);
+            NewTone(BUZZER, 500);
             buzzer_mode = 1;
             buzzer_timer = millis();
         }
         else if (millis() - buzzer_timer >= 2000 && buzzer_mode == 1)
         {
-            noTone(BUZZER);
+            noNewTone(BUZZER);
             buzzer_mode = 2;
             buzzer_timer = millis();
         }
         else if (millis() - buzzer_timer >= 2000 && buzzer_mode == 2)
         {
-            tone(BUZZER, 1000);
+            NewTone(BUZZER, 1000);
             buzzer_mode = 3;
             buzzer_timer = millis();
         }
         else if (millis() - buzzer_timer >= 2000 && buzzer_mode == 3)
         {
-            noTone(BUZZER);
+            noNewTone(BUZZER);
             buzzer_mode = 4;
             buzzer_timer = millis();
         }
         else if (millis() - buzzer_timer >= 2000 && buzzer_mode == 4)
         {
-            tone(BUZZER, 1500);
+            NewTone(BUZZER, 1500);
             buzzer_mode = 5;
             buzzer_timer = millis();
         }
         else if (millis() - buzzer_timer >= 2000 && buzzer_mode == 5)
         {
-            noTone(BUZZER);
+            noNewTone(BUZZER);
             buzzer_mode = 0;
             buzzer_timer = millis();
         }
